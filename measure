@@ -1,0 +1,590 @@
+#!/usr/bin/env python3
+# TODO:
+#   - config file validation ahead of start
+#   - debugging decorator for functions and methods
+#
+from measure import Measure, ST_FAILED, ST_BAD_REQUEST
+
+import copy
+import json
+import os
+import select
+import signal
+import subprocess
+import sys
+import time
+import yaml
+import collections
+import requests
+import threading
+import uuid
+
+DESC = "Execute driver aggregator for Opsani Optune"
+VERSION = "0.0.1"
+PROGRESS_INTERVAL = 30
+HAS_CANCEL = True
+CFG_FILE = "config.yaml"
+DRIVER_NAME = "exec"
+
+# Defaults
+METRICS = {}
+ANNOTATIONS = None
+
+TASK_DEFAULTS = {
+    "name": None,
+    "async": False,
+    "ignore_exitcode": False,
+    "notify": False,
+    "retries": 0,
+    "timeout": None,
+}
+
+REQUEST_DEFAULTS = {
+    "method": "GET",
+    "url": None,
+    "http_timeout": 10,
+    "data": {},
+    "content-type": "application/json",
+    "headers": {},
+    "success_codes": "200-399",
+    "verify": True,
+}
+
+# Definitions for task verification
+CHECK_ACTIONS = ["exec", "shell_exec", "request"]  # Allowed actions
+CHECK_ASYNC = ["exec", "shell_exec"]  # Tasks that can be run async
+CHECK_SYNC = ["exec", "shell_exec", "request"]  # Tasks that can be run sync
+CHECK_REQUIRED_PARAMETERS = {"request": ["url"]}
+CHECK_EXIT_CODES_VALUES = "^[0-9]+(-[0-9]+)?$|$"
+CHECK_EXIT_CODES_TYPES = [list, str]
+
+
+class Exec(Measure):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+
+        self.async_processes = {}
+
+        self.cfg = self._get_driver_cfg()
+        self.supports_cancel = self.cfg.get("force_cancel", False)
+        self._term_in_prog = False
+        self.input_data = {}
+        self.t_measure_start = None
+        self.start_time = time.time()
+        self.end_time = None
+
+        self.process_async_tasks_thread = None
+        self._progress_counter_thread = None
+
+    @staticmethod
+    def _normalize_codes(codes):
+        def _code_to_range(code):
+            if "-" in code:
+                o = code.split("-")
+                return [int(o[0]), int(o[1])]
+            else:
+                return [int(code), int(code)]
+
+        if isinstance(codes, str):
+            return _code_to_range(codes)
+        elif isinstance(codes, list):
+            return [_code_to_range(a) for a in codes]
+        else:
+            return []
+
+    @staticmethod
+    def _check_value_in_range(ranges, value):
+        for r in ranges:
+            if r[0] <= value <= r[1]:
+                return True
+        return False
+
+    # Overwrite super
+    def describe(self):
+        """
+        Returns an empty dict since we do not provide metrics
+        """
+        # This driver does not return any metrics
+        return METRICS
+
+    def _merge_task_definition(self, task):
+        """
+        Merge task definition with defaults
+        """
+        updated_task_definition = self._merge_dicts(TASK_DEFAULTS, task)
+        if "request" in updated_task_definition:
+            request_definition = updated_task_definition["request"]
+            updated_task_definition["request"] = self._merge_dicts(
+                REQUEST_DEFAULTS, request_definition
+            )
+        return updated_task_definition
+
+    def _stop_running_processes(self):
+        """
+        Stops background tasks
+        """
+        self._term_in_prog = True
+        processes = list(self.async_processes.keys())
+        for process in processes:
+            if self.async_processes[process]['state'] == 'running':
+                self.async_processes[process]['process'].terminate()
+                time.sleep(0.5)
+                self.async_processes[process]['process'].kill()
+                self.async_processes[process]['state'] = 'complete'
+
+    # Overwrite super
+    def handle_cancel(self, signal, frame):
+        """
+        Terminates all async tasks on cancel event
+
+        :param signal:
+        :param frame:
+        """
+        err = f"Exiting due to signal: {signal}"
+        # self.debug(err)
+
+        # Terminate running async processes
+        if not self._term_in_prog:
+            self._stop_running_processes()
+
+        self.print_measure_error(err, ST_FAILED)
+        sys.exit(3)
+
+    def _verify_task_definition(self, task):
+        """
+        TODO
+        Verifies sanity of task definition
+
+        :param task:
+        :return:
+        """
+        return True, ""
+
+    def execute_task(self, task):
+        """
+        Executes a single task from taskset
+        :param task:
+        :return:
+        """
+        # self.debug(f"Entered execute_task with {str(task)}")
+        counter = 1
+        result = {"status": "fail", "code": "1", "message": "Task failed"}
+        while counter <= task["retries"] + 1:
+            # self.debug(f"execute_task: execute task {str(task)}, attempt {counter} out of {task['retries'] + 1}")
+            result = {"status": "fail", "code": "1", "message": "Task failed"}
+            self.progress_message = f"Executing task {task['name']}"
+            if "request" in task:
+                # Run request
+                result = self._execute_request_task(task)
+            elif "exec" in task or "exec_shell" in task:
+                result = self._execute_exec_task(task)
+
+            if result["status"] == "ok" or result["status"] == "running":
+                break
+            counter += 1
+        # self.debug(f"Leaving execute_task with {str(result)}")
+        return result
+
+    def _execute_exec_task(self, task):
+        """
+        Executes 'exec' or 'shell_exec' task
+
+        :param task:
+        :return:
+        """
+        # self.debug(f"Entered _execute_sync_task with {str(task)}")
+
+        status = "fail"
+        code = 1
+        message = f"Task failed"
+        result = {"status": status, "code": code, "message": message}
+
+        args_raw, shell = (
+            (task["exec"], False) if "exec" in task else (task["shell_exec"], True)
+        )
+
+        if isinstance(args_raw, list):
+            args = [str(i) for i in args_raw]
+        else:
+            args = str(args_raw)
+
+        # self.debug(f"_execute_sync_task: args: {str(args)}")
+        try:
+            p = subprocess.Popen(
+                args,
+                shell=shell,
+                stdin=None,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                close_fds=True,
+                universal_newlines=True,
+                bufsize=32768,
+            )
+        except OSError as e:
+            result = {
+                "status": "fail",
+                "code": "1",
+                "message": f"Task start failed: {str(e)}",
+            }
+            # self.debug(f"Exiting _execute_sync_task with {str(result)}")
+            return result
+
+        # If task is async, write to self.async_processes and keep going
+        if task["async"]:
+            async_task_definition = {
+                "task": task,
+                "process": p,
+                "state": "running",
+                "time_start": time.time(),
+                "time_end": time.time() + task["timeout"] if task["timeout"] else None,
+            }
+            self.async_processes[str(uuid.uuid4())] = async_task_definition
+            result = {
+                "status": "running",
+                "code": 0,
+                "message": "Task started in background",
+            }
+            # self.debug(f"_execute_sync_task: task {str(task)} launched into background")
+            return result
+
+        try:
+            o, e = p.communicate(timeout=task['timeout'])
+        except subprocess.TimeoutExpired:
+            o = e = ""
+            # Task exceeded timeout
+            p.terminate()
+            time.sleep(0.5)
+            p.kill()
+            try:
+                o, e = p.communicate(timeout=task['timeout'])
+            except subprocess.TimeoutExpired:
+                pass
+            message = f"Task {str(task['name'])} timed out. stdout {str(o)}:, stderr: {str(e)}"
+            self._send_status_message(message)
+            return {"status": "fail", "code": 1, "message": message}
+
+        result["message"] = f"Task {task['name']} completed."
+        result["code"] = p.returncode if isinstance(p.returncode, int) else 1
+        # self.debug(f"_execute_sync_task: returncode: {str(result['code'])}, message: {str(result['message'])}")
+        if p.returncode == 0:
+            result["status"] = "ok"
+        else:
+            result["status"] = "fail"
+        if task["notify"]:
+            result["message"] += f" stdout: {o}, stderr: {e}"
+            self._send_status_message(result["message"])
+        # self.debug(f"Exiting _execute_sync_task with {str(result)}")
+        return result
+
+    def _execute_request_task(self, task):
+        """
+        Executes 'request' task
+        TODO: Implement timeout
+
+
+        :param task:
+        :return:
+        """
+        # self.debug(f"Entered _execute_request_task with {str(task)}")
+        my_task = task.copy()
+        status = "fail"
+        code = 1
+        message = "Task failed"
+        my_task["request"]["success_codes"] = self._normalize_codes(
+            task["request"]["success_codes"]
+        )
+        try:
+            out = requests.request(
+                my_task["request"]["method"],
+                my_task["request"]["url"],
+                verify=my_task["request"]["verify"],
+                timeout=(
+                    my_task["request"]["http_timeout"],
+                    my_task["request"]["http_timeout"],
+                ),
+                data=my_task["request"]["data"],
+                headers=my_task["request"]["headers"],
+            )
+            out.raise_for_status()
+        except requests.exceptions.HTTPError as e:
+            msg = f"HTTP Error: {str(e)}"
+            status = "fail"
+        except requests.exceptions.ConnectionError as e:
+            msg = f"Connection error: {str(e)}"
+            status = "fail"
+        except requests.exceptions.Timeout as e:
+            msg = f"HTTP Timeout: {str(e)}"
+            status = "fail"
+        except requests.exceptions.RequestException as e:
+            msg = f"Generic error: {str(e)}"
+            status = "fail"
+        else:
+            code = out.status_code
+            if self._check_value_in_range(my_task["request"]["success_codes"], code):
+                status = "ok"
+                message = f"Task was successful: {str(out.content)}"
+            else:
+                status = "fail"
+                message = f"Task failed: {str(out.content)}"
+
+        result = {"status": status, "code": code, "message": message}
+        # self.debug(f"Exiting _execute_request_task with {str(result)}")
+        return result
+
+    def _run_taskset(self, taskset, ignore_errors=False):
+        """
+        Parse and run tasks in taskset
+        """
+        # self.debug(f"Entered _run_taskset with {str(taskset)}")
+        taskset_status = "ok"
+        taskset_message = "All tasks completed"
+        tasks_status = []
+        # self.debug(f"Entered _run_taskset with: {taskset}")
+        for task in taskset:
+            if self._term_in_prog:
+                break
+            # self.debug(f"Running task: {task}")
+            task_definition = self._merge_task_definition(task)
+            # self.debug(f"Complete task definition: {task_definition}")
+            vrf_result, vrf_message = self._verify_task_definition(task_definition)
+            if not vrf_result:
+                message = f"Task verification failed, result: {vrf_result}, message: {vrf_message}"
+                # self.debug(message)
+                task_result = {
+                    "status": "fail",
+                    "ignore_failure": False,
+                    "code": 1,
+                    "message": message,
+                }
+            else:
+                # Returns structure:
+                # {"status": str("ok|fail|running"), "code": int(exit_code), "message": str("message")}
+                task_result = self.execute_task(task_definition)
+
+            if task_definition["ignore_exitcode"] or ignore_errors:
+                task_result["ignore_failure"] = True
+            else:
+                task_result["ignore_failure"] = False
+
+            if task_result["status"] == "fail" and not task_result["ignore_failure"]:
+                error_message = f"Task {task_definition['name']} from phase {str(taskset)} failed with result {task_result['code']}: {task_result['message']}"
+                self._fail(error_message)
+
+            tasks_status.append(
+                {"name": task_definition["name"], "result": task_result}
+            )
+
+        for item in tasks_status:
+            if (
+                item["result"]["status"] == "fail"
+                and not item["result"]["ignore_failure"]
+            ):
+                taskset_status = "fail"
+                taskset_message = "Some task(s) failed"
+
+        result = {
+            "status": taskset_status,
+            "message": taskset_message,
+            "tasks": tasks_status,
+        }
+        # self.debug(f"Exiting _run_taskset with {str(result)}")
+        return result
+
+    def _cleanup(self):
+        """
+        Run 'post' section on exit/error, ignoring errors
+
+        """
+        self._stop_running_processes()
+        try:
+            self._run_taskset(self.cfg["post"], ignore_errors=True)
+        except:
+            # We ignore any errors from 'post' phase during cleanup
+            pass
+
+    def _fail(self, message):
+        """
+        Fail the run
+
+        :param message:
+        """
+        self._cleanup()
+        raise Exception(message)
+
+    def _send_status_message(self, message=None):
+        """
+        Sends out-of-order status message to OCO
+
+        :param message:
+        """
+        # self.debug(f"Entered _send_status_message with {str(message)}")
+        msg = {"message": message, "progress": self.progress}
+        print(json.dumps(msg), flush=True)
+
+    def _merge_dicts(self, dict1, dict2):
+        """
+        Returns merged dict of dict1 and dict2
+        """
+        result = dict1.copy()
+        for k, v in dict2.items():
+            if isinstance(result.get(k), dict) and isinstance(v, collections.Mapping):
+                result[k] = self._merge_dicts(result[k], v)
+            else:
+                result[k] = v
+        return result
+
+    def _execute_stage(self, stage):
+        """
+        Executes a single stage (pre-, start-, stop-, post-)
+
+        :param stage:
+        """
+        if stage in self.cfg:
+            result = self._run_taskset(
+                self.cfg[stage], ignore_errors=True if stage == "post" else False
+            )
+            # "result": {"status": "ok", "tasks": [{"name": task_name, }, ...]}
+            if (
+                    not isinstance(result, dict)
+                    or "status" not in result
+                    or result["status"] != "ok"
+            ) and stage != "post":
+                # Ignore all errors if we are in 'post' phase
+                err = f"Stage {stage} returned incorrect result: {str(result)}"
+                self._fail(err)
+
+
+    def measure(self):
+        """
+        Runs the measure iteration
+
+        :return:
+        """
+        # self.debug(f"Entered measure")
+
+        try:
+            self.end_time = self.start_time + self.input_data['control']['duration']
+            # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
+        except KeyError:
+            raise Exception('Control configuration is missing "duration"')
+
+        # Launch _process_async_tasks into background
+        self.process_async_tasks_thread = threading.Thread(
+            target=self._process_async_tasks
+        )
+        self.process_async_tasks_thread.setDaemon(True)
+        self.process_async_tasks_thread.start()
+
+        # Launch _process_counter into background
+        self._progress_counter_thread = threading.Thread(
+            target=self._progress_counter
+        )
+        self._progress_counter_thread.setDaemon(True)
+        self._progress_counter_thread.start()
+
+        # Run phases
+        # We run pre -> start --(wait for duration)-> stop -> post
+        # If any unhandled error happens during 'pre, 'start' or 'stop' phases,
+        #   we fail the measurement and run 'post' phase immediately to clean up
+        #   environment
+        for stage in ["pre", "start"]:
+            self._execute_stage(stage)
+
+        if self.end_time and time.time() < self.end_time:
+            time_to_sleep = self.end_time - time.time()
+            # self.debug(f"Sleeping for {time_to_sleep} seconds until 'stop' phase can begin")
+            time.sleep(time_to_sleep)
+
+        for stage in ["stop", "post"]:
+            self._execute_stage(stage)
+
+        self._stop_running_processes()
+        # self.debug(f"Exiting measure with {str(METRICS)}, {str(ANNOTATIONS)}")
+        return METRICS, ANNOTATIONS
+
+    @staticmethod
+    def _get_driver_cfg():
+        """
+        Load the user-defined configuration from CFG_FILE
+        """
+        try:
+            with open(CFG_FILE) as f:
+                d = yaml.load(f, Loader=yaml.CSafeLoader)
+        except IOError as e:
+            return {}
+        except yaml.error.YAMLError as e:
+            raise Exception(f"syntax error in {CFG_FILE}: {str(e)}")
+        return d.get(DRIVER_NAME, {})
+
+    def _progress_counter(self):
+        """
+        Updates progress counter
+
+        """
+        while True:
+            progress = ((time.time() - self.start_time) * 100) / (self.end_time - self.start_time)
+            if progress < 0: progress = 0
+            if progress > 100: progress = 100
+            self.progress = int(progress)
+            time.sleep(10)
+
+    def _process_async_tasks(self):
+        """
+        Loops through background/async tasks, collecting stdout/stderr
+        TODO: implement processing of exit codes (?)
+
+        """
+        # Walk through self.async_processes, collect and re-post stdout/stderr,
+        # terminate on timeout
+        while True:
+            tasks = list(self.async_processes.keys())
+            for t in tasks:
+                # task:
+                # async_task_definition_id: {
+                #     "task": task,
+                #     "process": p,
+                #     "state": "running",
+                #     "time_start": time.time(),
+                #     "time_end": time.time() + task["timeout"] if task["timeout"] else None,
+                # }
+                # self.debug(f"_process_async_tasks: processing task {self.async_processes[t]}")
+
+                # Skip if task is finished already
+                if self.async_processes[t]['state'] == 'complete':
+                    continue
+
+                # Collect stdout/stderr:
+                try:
+                    o = e = ""
+                    o, e = self.async_processes[t]['process'].communicate(timeout=1)
+                except subprocess.TimeoutExpired:
+                    # Didn't collect anything
+                    pass
+                except ValueError:
+                    # Task is dead
+                    self.async_processes[t]['state'] = 'complete'
+                    continue
+                else:
+                    if self.async_processes[t]['task']['notify'] and (o or e):
+                        message = f"Async task '{str(self.async_processes[t]['task']['name'])}' status: stdout {str(o)}:, stderr: {str(e)}"
+                        self._send_status_message(message)
+
+                if isinstance(self.async_processes[t]['process'].returncode, int):
+                    self.async_processes[t]['state'] = 'complete'
+                    continue
+
+                # Check whether it is time to terminate the process
+                if self.async_processes[t]['time_end'] and time.time() >= self.async_processes[t]['time_end']:
+                    # Time to terminate
+                    p = self.async_processes[t]['process'].terminate()
+                    message = f"Task '{str(self.async_processes[t]['task']['name'])}' terminated due to timeout"
+                    self._send_status_message(message)
+                    # Task would be collected on next loop iteration
+            time.sleep(5)
+
+
+if __name__ == "__main__":
+    driver = Exec(VERSION, DESC, HAS_CANCEL, PROGRESS_INTERVAL)
+    driver.run()
+
+# {'cmd': 'MEASURE', 'param': {'metrics': [], 'control': {'duration': 180, 'load': {}}}}"
