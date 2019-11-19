@@ -19,7 +19,7 @@ DESC = "Execute driver aggregator for Opsani Optune"
 VERSION = "0.0.1"
 PROGRESS_INTERVAL = 30
 HAS_CANCEL = True
-CFG_FILE = "config.yaml"
+CFG_FILE = "/servo/config.yaml"
 DRIVER_NAME = "exec"
 
 # Defaults
@@ -135,7 +135,7 @@ class Exec(Measure):
         Terminates all async tasks on cancel event
         """
         err = f"Exiting due to signal: {signal}"
-        self.debug(err)
+        # self.debug(err)
 
         # Terminate running async processes
         if not self._term_in_prog:
@@ -276,9 +276,7 @@ class Exec(Measure):
         my_task["request"]["success_codes"] = self.normalize_success_codes(
             task["request"]["success_codes"]
         )
-        self.debug(
-            f"execute_request_task: Request parameters: {str(my_task['request'])}"
-        )
+        self.debug(f"execute_request_task: Request parameters: {str(my_task['request'])}")
         try:
             out = requests.request(
                 my_task["request"]["method"],
@@ -488,7 +486,7 @@ class Exec(Measure):
         """
         try:
             with open(CFG_FILE) as f:
-                d = yaml.load(f)
+                d = yaml.load(f.read())
         except IOError as e:
             return {}
         except yaml.error.YAMLError as e:
