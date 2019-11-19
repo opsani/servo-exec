@@ -276,6 +276,16 @@ class Exec(Measure):
         my_task["request"]["success_codes"] = self.normalize_success_codes(
             task["request"]["success_codes"]
         )
+
+        # lowercase all headers
+        task["request"]['headers'] = {k.lower(): v for k, v in task["request"]['headers'].items()}
+
+        if 'content-type' in task["request"] \
+                and isinstance(task["request"]['headers'], dict) \
+                and task["request"]['method'] == 'POST':
+            task["request"]['headers']['content-type'] = task["request"]['content-type']
+
+
         self.debug(f"execute_request_task: Request parameters: {str(my_task['request'])}")
         try:
             out = requests.request(
