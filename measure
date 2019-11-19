@@ -470,6 +470,7 @@ class Exec(Measure):
         if self.end_time and time.time() < self.end_time:
             time_to_sleep = self.end_time - time.time()
             # self.debug(f"Sleeping for {time_to_sleep} seconds until 'stop' phase can begin")
+            self.progress_message = f"servo-exec: Waiting for measurements to complete"
             time.sleep(time_to_sleep)
 
         for stage in ["stop", "post"]:
@@ -486,7 +487,7 @@ class Exec(Measure):
         """
         try:
             with open(CFG_FILE) as f:
-                d = yaml.load(f.read())
+                d = yaml.load(f.read(), Loader=yaml.SafeLoader)
         except IOError as e:
             return {}
         except yaml.error.YAMLError as e:
