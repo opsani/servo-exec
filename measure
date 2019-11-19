@@ -127,11 +127,11 @@ class Exec(Measure):
         self._term_in_prog = True
         processes = list(self.async_processes.keys())
         for process in processes:
-            if self.async_processes[process]['state'] == 'running':
-                self.async_processes[process]['process'].terminate()
+            if self.async_processes[process]["state"] == "running":
+                self.async_processes[process]["process"].terminate()
                 time.sleep(0.5)
-                self.async_processes[process]['process'].kill()
-                self.async_processes[process]['state'] = 'complete'
+                self.async_processes[process]["process"].kill()
+                self.async_processes[process]["state"] = "complete"
 
     # Overwrite super
     def handle_cancel(self, signal, frame):
@@ -238,7 +238,7 @@ class Exec(Measure):
             return result
 
         try:
-            o, e = p.communicate(timeout=task['timeout'])
+            o, e = p.communicate(timeout=task["timeout"])
         except subprocess.TimeoutExpired:
             o = e = ""
             # Task exceeded timeout
@@ -246,7 +246,7 @@ class Exec(Measure):
             time.sleep(0.5)
             p.kill()
             try:
-                o, e = p.communicate(timeout=task['timeout'])
+                o, e = p.communicate(timeout=task["timeout"])
             except subprocess.TimeoutExpired:
                 pass
             message = f"Task {str(task['name'])} timed out. stdout {str(o)}:, stderr: {str(e)}"
@@ -280,7 +280,9 @@ class Exec(Measure):
         my_task["request"]["success_codes"] = self.normalize_success_codes(
             task["request"]["success_codes"]
         )
-        self.debug(f"execute_request_task: Request parameters: {str(my_task['request'])}")
+        self.debug(
+            f"execute_request_task: Request parameters: {str(my_task['request'])}"
+        )
         try:
             out = requests.request(
                 my_task["request"]["method"],
@@ -431,14 +433,13 @@ class Exec(Measure):
             )
             # "result": {"status": "ok", "tasks": [{"name": task_name, }, ...]}
             if (
-                    not isinstance(result, dict)
-                    or "status" not in result
-                    or result["status"] != "ok"
+                not isinstance(result, dict)
+                or "status" not in result
+                or result["status"] != "ok"
             ) and stage != "post":
                 # Ignore all errors if we are in 'post' phase
                 err = f"Stage {stage} returned incorrect result: {str(result)}"
                 self.fail(err)
-
 
     def measure(self):
         """
@@ -447,7 +448,7 @@ class Exec(Measure):
         # self.debug(f"Entered measure")
 
         try:
-            self.end_time = self.start_time + self.input_data['control']['duration']
+            self.end_time = self.start_time + self.input_data["control"]["duration"]
             # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
         except KeyError:
             raise Exception('Control configuration is missing "duration"')
@@ -460,9 +461,7 @@ class Exec(Measure):
         self.process_async_tasks_thread.start()
 
         # Launch _process_counter into background
-        self._progress_counter_thread = threading.Thread(
-            target=self.progress_counter
-        )
+        self._progress_counter_thread = threading.Thread(target=self.progress_counter)
         self._progress_counter_thread.setDaemon(True)
         self._progress_counter_thread.start()
 
@@ -505,9 +504,13 @@ class Exec(Measure):
         Updates progress counter
         """
         while True:
-            progress = ((time.time() - self.start_time) * 100) / (self.end_time - self.start_time)
-            if progress < 0: progress = 0
-            if progress > 100: progress = 100
+            progress = ((time.time() - self.start_time) * 100) / (
+                self.end_time - self.start_time
+            )
+            if progress < 0:
+                progress = 0
+            if progress > 100:
+                progress = 100
             self.progress = int(progress)
             time.sleep(10)
 
@@ -532,34 +535,37 @@ class Exec(Measure):
                 # self.debug(f"_process_async_tasks: processing task {self.async_processes[t]}")
 
                 # Skip if task is finished already
-                if self.async_processes[t]['state'] == 'complete':
+                if self.async_processes[t]["state"] == "complete":
                     continue
 
                 # Collect stdout/stderr:
                 try:
                     o = e = ""
-                    o, e = self.async_processes[t]['process'].communicate(timeout=1)
+                    o, e = self.async_processes[t]["process"].communicate(timeout=1)
                 except subprocess.TimeoutExpired:
                     # Didn't collect anything
                     pass
                 except ValueError:
                     # Task is dead
-                    self.async_processes[t]['state'] = 'complete'
+                    self.async_processes[t]["state"] = "complete"
                     pass
                 else:
-                    if self.async_processes[t]['task']['notify'] and (o or e):
+                    if self.async_processes[t]["task"]["notify"] and (o or e):
                         message = f"Async task '{str(self.async_processes[t]['task']['name'])}' status: stdout {str(o)}:, stderr: {str(e)}"
                         self.send_status_message(message)
 
-                if isinstance(self.async_processes[t]['process'].returncode, int):
-                    self.async_processes[t]['state'] = 'complete'
+                if isinstance(self.async_processes[t]["process"].returncode, int):
+                    self.async_processes[t]["state"] = "complete"
 
                     continue
 
                 # Check whether it is time to terminate the process
-                if self.async_processes[t]['time_end'] and time.time() >= self.async_processes[t]['time_end']:
+                if (
+                    self.async_processes[t]["time_end"]
+                    and time.time() >= self.async_processes[t]["time_end"]
+                ):
                     # Time to terminate
-                    p = self.async_processes[t]['process'].terminate()
+                    p = self.async_processes[t]["process"].terminate()
                     message = f"Task '{str(self.async_processes[t]['task']['name'])}' terminated due to timeout"
                     self.send_status_message(message)
                     # Task would be collected on next loop iteration
