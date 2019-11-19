@@ -39,7 +39,7 @@ exec:
 ```
 
 ## Task definition
-
+```
 - name: task name               # Task name, arbirtrary string that is used to identify task in logs and mesages.
                                 # type: string, optional, highly recommended, default: None
   
@@ -118,10 +118,10 @@ exec:
                                 #     - 201
                                 #     - "200-299"
                                 # type: list or string, optional, default is "200-399"
-
+```
 
 ## Example task definitions
-
+```
   # HTTP HEAD request to 'http://api:8080?q=start', with 15-second timeout, special user-agent header and non-standard HTTP status codes.
   - name: HEAD request
     ignore_exitcode: true
