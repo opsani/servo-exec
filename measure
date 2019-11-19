@@ -28,7 +28,7 @@ DRIVER_NAME = "exec"
 
 # Defaults
 METRICS = {}
-ANNOTATIONS = None
+ANNOTATIONS = {}
 
 TASK_DEFAULTS = {
     "name": None,
