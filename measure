@@ -39,7 +39,7 @@ REQUEST_DEFAULTS = {
     "method": "GET",
     "url": None,
     "http_timeout": 10,
-    "data": {},
+    "data": "{}",
     "content-type": "application/json",
     "headers": {},
     "success_codes": "200-399",
