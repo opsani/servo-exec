@@ -15,8 +15,8 @@ import requests
 import threading
 import uuid
 
-DESC = "Execute driver aggregator for Opsani Optune"
-VERSION = "0.0.1"
+DESC = "Execute driver for Opsani Optune"
+VERSION = "1.0.0"
 PROGRESS_INTERVAL = 30
 HAS_CANCEL = True
 CFG_FILE = "/servo/config.yaml"
@@ -50,9 +50,9 @@ REQUEST_DEFAULTS = {
 CHECK_ACTIONS = ["exec", "shell_exec", "request"]  # Allowed actions
 CHECK_ASYNC = ["exec", "shell_exec"]  # Tasks that can be run async
 CHECK_SYNC = ["exec", "shell_exec", "request"]  # Tasks that can be run sync
-CHECK_REQUIRED_PARAMETERS = {"request": ["url"]}
-CHECK_EXIT_CODES_VALUES = "^[0-9]+(-[0-9]+)?$|$"
-CHECK_EXIT_CODES_TYPES = [list, str]
+CHECK_REQUIRED_PARAMETERS = {"request": ["url"]}  # required parameters
+CHECK_EXIT_CODES_VALUES = "^[0-9]+(-[0-9]+)?$|$"  # allowed exit code value formats
+CHECK_EXIT_CODES_TYPES = [list, str]  # allow exit code value types
 
 
 class Exec(Measure):
@@ -62,8 +62,8 @@ class Exec(Measure):
         self.async_processes = {}
 
         self.cfg = self.get_driver_cfg()
-        self.supports_cancel = self.cfg.get("force_cancel", False)
-        self._term_in_prog = False
+        # self.supports_cancel = self.cfg.get("force_cancel", False)
+        self._term_in_progress = False
         self.input_data = {}
         self.t_measure_start = None
         self.start_time = time.time()
@@ -120,7 +120,7 @@ class Exec(Measure):
         """
         Stops background tasks
         """
-        self._term_in_prog = True
+        self._term_in_progress = True
         processes = list(self.async_processes.keys())
         for process in processes:
             if self.async_processes[process]["state"] == "running":
@@ -138,11 +138,12 @@ class Exec(Measure):
         # self.debug(err)
 
         # Terminate running async processes
-        if not self._term_in_prog:
+        if not self._term_in_progress:
             self.stop_running_async_processes()
 
         self.print_measure_error(err, ST_FAILED)
         sys.exit(3)
+
 
     def validate_task_definition(self, task):
         """
@@ -278,15 +279,20 @@ class Exec(Measure):
         )
 
         # lowercase all headers
-        task["request"]['headers'] = {k.lower(): v for k, v in task["request"]['headers'].items()}
+        my_task["request"]["headers"] = {
+            k.lower(): v for k, v in my_task["request"]["headers"].items()
+        }
 
-        if 'content-type' in task["request"] \
-                and isinstance(task["request"]['headers'], dict) \
-                and task["request"]['method'] == 'POST':
-            task["request"]['headers']['content-type'] = task["request"]['content-type']
+        if (
+            "content-type" in my_task["request"]
+            and isinstance(my_task["request"]["headers"], dict)
+            and my_task["request"]["method"] == "POST"
+        ):
+            my_task["request"]["headers"]["content-type"] = my_task["request"][
+                "content-type"
+            ]
 
-
-        self.debug(f"execute_request_task: Request parameters: {str(my_task['request'])}")
+        # self.debug(f"execute_request_task: Request parameters: {str(my_task['request'])}")
         try:
             out = requests.request(
                 my_task["request"]["method"],
@@ -316,16 +322,16 @@ class Exec(Measure):
             code = out.status_code
             if self.check_value_in_range(my_task["request"]["success_codes"], code):
                 status = "ok"
-                message = f"Task {task['name']} was successful: {str(out.content)}"
+                message = f"Task {my_task['name']} was successful: {str(out.content)}"
             else:
                 status = "fail"
-                message = f"Task failed: {str(out.content)}"
+                message = f"Task {my_task['name']} failed: {str(out.content)}"
 
         result = {"status": status, "code": code, "message": message}
 
-        if task["notify"] and out and out.content:
+        if my_task["notify"] and out and out.content:
             result["message"] += str(out.content)
-        self.send_status_message(result["message"])
+            self.send_status_message(result["message"])
 
         # self.debug(f"Exiting _execute_request_task with {str(result)}")
         return result
@@ -340,7 +346,7 @@ class Exec(Measure):
         tasks_status = []
         # self.debug(f"Entered _run_taskset with: {taskset}")
         for task in taskset:
-            if self._term_in_prog:
+            if self._term_in_progress:
                 break
             # self.debug(f"Running task: {task}")
             task_definition = self.merge_task_definition(task)
@@ -393,12 +399,12 @@ class Exec(Measure):
         """
         Run 'post' section on exit/error, ignoring errors
         """
-        self.stop_running_async_processes()
         try:
             self.run_taskset(self.cfg["post"], ignore_errors=True)
         except:
             # We ignore any errors from 'post' phase during cleanup
             pass
+        self.stop_running_async_processes()
 
     def fail(self, message):
         """
@@ -442,7 +448,7 @@ class Exec(Measure):
                 or result["status"] != "ok"
             ) and stage != "post":
                 # Ignore all errors if we are in 'post' phase
-                err = f"Stage {stage} returned incorrect result: {str(result)}"
+                err = f"Stage {stage} failed: {str(result)}"
                 self.fail(err)
 
     def measure(self):
@@ -452,10 +458,20 @@ class Exec(Measure):
         # self.debug(f"Entered measure")
 
         try:
-            self.end_time = self.start_time + self.input_data["control"]["duration"]
+            self.end_time = (
+                self.start_time
+                + self.input_data["control"]["duration"]
+                + self.input_data["control"].get("warmup", 0)
+                + self.input_data["control"].get("delay", 0)
+            )
+
             # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
         except KeyError:
             raise Exception('Control configuration is missing "duration"')
+
+        # self.end_time += self.input_data["control"].get("warmup", 0) + self.input_data[
+        #     "control"
+        # ].get("delay", 0)
 
         # Launch _process_async_tasks into background
         self.process_async_tasks_thread = threading.Thread(
