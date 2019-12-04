@@ -14,6 +14,9 @@ import collections
 import requests
 import threading
 import uuid
+import os
+import signal
+
 
 DESC = "Execute driver for Opsani Optune"
 VERSION = "1.0.0"
@@ -144,7 +147,6 @@ class Exec(Measure):
         self.print_measure_error(err, ST_FAILED)
         sys.exit(3)
 
-
     def validate_task_definition(self, task):
         """
         TODO
@@ -197,6 +199,7 @@ class Exec(Measure):
 
         # self.debug(f"_execute_sync_task: args: {str(args)}")
         try:
+            # Start subprocess, executing os.setsid to create a new process group
             p = subprocess.Popen(
                 args,
                 shell=shell,
@@ -206,6 +209,7 @@ class Exec(Measure):
                 close_fds=True,
                 universal_newlines=True,
                 bufsize=32768,
+                preexec_fn=os.setsid,
             )
         except OSError as e:
             result = {
@@ -239,6 +243,17 @@ class Exec(Measure):
         except subprocess.TimeoutExpired:
             o = e = ""
             # Task exceeded timeout
+            # Try to kill the whole process group
+            try:
+                p_pgid = os.getpgid(p.pid)
+                os.killpg(p_pgid, signal.SIGTERM)
+                time.sleep(0.5)
+                os.killpg(p_pgid, signal.SIGKILL)
+            except ProcessLookupError:
+                # Killing process group failed, fall back to killing process itself
+                pass
+
+            # Terminating the process even if terminating process group succeeded
             p.terminate()
             time.sleep(0.5)
             p.kill()
