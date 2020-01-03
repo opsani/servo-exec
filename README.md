@@ -1,5 +1,5 @@
 # servo-exec
-Arbitraty execution and HTTP request Optune servo driver
+Arbitraty execution and HTTP request Optune servo measure driver
 
 The purpose of this driver is to prepare the target environment for measurement, and clean up environment after the measurement. Possible preparation steps might include:
 * Start VPN connection to tested environment
