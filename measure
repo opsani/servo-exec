@@ -473,12 +473,18 @@ class Exec(Measure):
         # self.debug(f"Entered measure")
 
         try:
+            duration = self.input_data["control"]["duration"]
+            warmup = self.input_data["control"].get("warmup", 0)
+            delay = self.input_data["control"].get("delay", 0)
             self.end_time = (
                 self.start_time
-                + self.input_data["control"]["duration"]
-                + self.input_data["control"].get("warmup", 0)
-                + self.input_data["control"].get("delay", 0)
+                + duration
+                + warmup
+                + delay
             )
+            os.putenv("OPSANI_DURATION", duration if type(duration) == int else 0)
+            os.putenv("OPSANI_WARMUP", warmup if type(duration) == int else 0)
+            os.putenv("OPSANI_DELAY", delay if type(duration) == int else 0)
 
             # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
         except KeyError:
