@@ -482,9 +482,12 @@ class Exec(Measure):
                 + warmup
                 + delay
             )
-            os.putenv("OPSANI_DURATION", str(duration) if type(duration) == int else 0)
-            os.putenv("OPSANI_WARMUP", str(warmup) if type(duration) == int else 0)
-            os.putenv("OPSANI_DELAY", str(delay) if type(duration) == int else 0)
+            # os.putenv("OPSANI_DURATION", str(duration) if type(duration) == int else 0)
+            # os.putenv("OPSANI_WARMUP", str(warmup) if type(duration) == int else 0)
+            # os.putenv("OPSANI_DELAY", str(delay) if type(duration) == int else 0)
+            os.environ["OPSANI_DURATION"] = str(duration) if type(duration) == int else 0
+            os.environ["OPSANI_WARMUP"] = str(warmup) if type(warmup) == int else 0
+            os.environ["OPSANI_DELAY"] = str(delay) if type(delay) == int else 0
 
             # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
         except KeyError:
