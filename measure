@@ -200,6 +200,14 @@ class Exec(Measure):
         # self.debug(f"_execute_sync_task: args: {str(args)}")
         try:
             # Start subprocess, executing os.setsid to create a new process group
+            duration = self.input_data["control"]["duration"]
+            warmup = self.input_data["control"].get("warmup", 0)
+            delay = self.input_data["control"].get("delay", 0)
+            dictionary = dict(os.environ,
+                     OPSANI_DURATION = str(duration) if type(duration) == int else 0,
+                     OPSANI_WARMUP = str(warmup) if type(warmup) == int else 0,
+                     OPSANI_DELAY = str(delay) if type(delay) == int else 0)
+
             p = subprocess.Popen(
                 args,
                 shell=shell,
@@ -210,6 +218,7 @@ class Exec(Measure):
                 universal_newlines=True,
                 bufsize=32768,
                 preexec_fn=os.setsid,
+                env=dictionary
             )
         except OSError as e:
             result = {
@@ -482,9 +491,9 @@ class Exec(Measure):
                 + warmup
                 + delay
             )
-            os.environ["OPSANI_DURATION"] = str(duration) if type(duration) == int else 0
-            os.environ["OPSANI_WARMUP"] = str(warmup) if type(warmup) == int else 0
-            os.environ["OPSANI_DELAY"] = str(delay) if type(delay) == int else 0
+            # os.environ["OPSANI_DURATION"] = str(duration) if type(duration) == int else 0
+            # os.environ["OPSANI_WARMUP"] = str(warmup) if type(warmup) == int else 0
+            # os.environ["OPSANI_DELAY"] = str(delay) if type(delay) == int else 0
 
             # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
         except KeyError:
