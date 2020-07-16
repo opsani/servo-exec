@@ -22,7 +22,7 @@ DESC = "Execute driver for Opsani Optune"
 VERSION = "1.0.0"
 PROGRESS_INTERVAL = 30
 HAS_CANCEL = True
-CFG_FILE = "/servo/config.yaml"
+CFG_FILE = "config.yaml"
 DRIVER_NAME = "exec"
 
 # Defaults
@@ -203,7 +203,7 @@ class Exec(Measure):
             duration = self.input_data["control"]["duration"]
             warmup = self.input_data["control"].get("warmup", 0)
             delay = self.input_data["control"].get("delay", 0)
-            dictionary = dict(os.environ,
+            env_vars = dict(os.environ,
                      OPSANI_DURATION = str(duration) if type(duration) == int else 0,
                      OPSANI_WARMUP = str(warmup) if type(warmup) == int else 0,
                      OPSANI_DELAY = str(delay) if type(delay) == int else 0)
@@ -218,7 +218,7 @@ class Exec(Measure):
                 universal_newlines=True,
                 bufsize=32768,
                 preexec_fn=os.setsid,
-                env=dictionary
+                env=env_vars
             )
         except OSError as e:
             result = {
@@ -491,9 +491,6 @@ class Exec(Measure):
                 + warmup
                 + delay
             )
-            # os.environ["OPSANI_DURATION"] = str(duration) if type(duration) == int else 0
-            # os.environ["OPSANI_WARMUP"] = str(warmup) if type(warmup) == int else 0
-            # os.environ["OPSANI_DELAY"] = str(delay) if type(delay) == int else 0
 
             # self.debug(f"Set end_time to {self.end_time}, time now is {time.time()}")
         except KeyError:
