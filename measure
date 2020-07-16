@@ -22,7 +22,7 @@ DESC = "Execute driver for Opsani Optune"
 VERSION = "1.0.0"
 PROGRESS_INTERVAL = 30
 HAS_CANCEL = True
-CFG_FILE = "config.yaml"
+CFG_FILE = "/servo/config.yaml"
 DRIVER_NAME = "exec"
 
 # Defaults
